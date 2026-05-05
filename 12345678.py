@@ -268,9 +268,10 @@ def load_mutation_db():
     return {}
 
 def auto_fill_healthy():
+    mutation_db = load_mutation_db()  # آمن لأنها دالة مخزنة (cached)
     m_id = st.session_state.get('m_id_in', '').upper().strip()
-    if m_id in MUTATION_DB:
-        st.session_state['h_id_in'] = MUTATION_DB[m_id]
+    if m_id in mutation_db:
+        st.session_state['h_id_in'] = mutation_db[m_id]
 # ========================
 # مكونات واجهة المستخدم 
 # ========================
@@ -335,7 +336,6 @@ def initialize_session_state():
 
 
 def main():
-    MUTATION_DB = load_mutation_db()
 
     st.set_page_config(page_title="Bio-Impact Analyzer", page_icon="🧬", layout="wide")
     initialize_session_state()
@@ -484,7 +484,7 @@ def main():
             df_comp = pd.merge(df_h, df_m, on='res_num', how='outer').sort_values('res_num').fillna('-')
             df_comp['الحالة'] = df_comp.apply(lambda r: '🔴 طفرة' if r['السليم'] != r['المصاب'] else '🟢 محافظ', axis=1)
             
-            with st.expander("جدول المقارنة الكامل"):
+            with st.expander("جدول المقارنة "):
                 st.dataframe(df_comp.rename(columns={'res_num': 'الرقم'}).style.apply(lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r), axis=1), use_container_width=True, hide_index=True)
 
             # Alignment
