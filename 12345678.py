@@ -1,20 +1,17 @@
-# ============================
-# Imports
-# ============================
 import os
-import numpy as np
-import streamlit as st
+import json
+import time
 import requests
+import numpy as np
 import pandas as pd
 from io import StringIO
 from scipy.spatial import KDTree
-from Bio.PDB import PDBParser, NeighborSearch
+from Bio.PDB import PDBParser
 from Bio.PDB.SASA import ShrakeRupley
 from Bio.Align import PairwiseAligner
+import streamlit as st
 import streamlit.components.v1 as components
 import py3Dmol
-import json
-import time
 # ============================
 # ثوابت
 # ============================
@@ -25,25 +22,47 @@ AA_3TO1 = {
     'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'
 }
 AA_PROPS = {
-    'ALA': 'غير قطبي (Non-polar)',       'ARG': 'قاعدي (+)',
-    'ASN': 'قطبي غير مشحون (Polar)',     'ASP': 'حمضي (-)',
-    'CYS': 'قطبي غير مشحون (Polar)',     'GLN': 'قطبي غير مشحون (Polar)',
-    'GLU': 'حمضي (-)',                    'GLY': 'غير قطبي (Non-polar)',
-    'HIS': 'قاعدي (+)',                   'ILE': 'غير قطبي (Non-polar)',
-    'LEU': 'غير قطبي (Non-polar)',        'LYS': 'قاعدي (+)',
-    'MET': 'غير قطبي (Non-polar)',        'PHE': 'عطري غير قطبي (Aromatic)',
-    'PRO': 'غير قطبي (Non-polar)',        'SER': 'قطبي غير مشحون (Polar)',
-    'THR': 'قطبي غير مشحون (Polar)',     'TRP': 'عطري غير قطبي (Aromatic)',
-    'TYR': 'عطري قطبي (Aromatic)',       'VAL': 'غير قطبي (Non-polar)'
+    'ALA': 'Non-polar', 'GLY': 'Non-polar', 'ILE': 'Non-polar', 'LEU': 'Non-polar', 'MET': 'Non-polar', 'PRO': 'Non-polar', 'VAL': 'Non-polar',
+    'ASN': 'Polar',     'CYS': 'Polar',     'GLN': 'Polar',     'SER': 'Polar',     'THR': 'Polar',
+    'ASP': 'Acidic (-)', 'GLU': 'Acidic (-)',
+    'ARG': 'Basic (+)',  'HIS': 'Basic (+)',  'LYS': 'Basic (+)',
+    'PHE': 'Aromatic',   'TRP': 'Aromatic',   'TYR': 'Aromatic'
 }
+
+def analyze_impact(h_res, m_res, h_sasa, m_sasa):
+    """تحليل التأثير العلمي للطفرة بناءً على الخواص الكيميائية والـ SASA"""
+    if h_res == m_res: return "Conservative"
+    
+    h_type = AA_PROPS.get(h_res, 'Unknown')
+    m_type = AA_PROPS.get(m_res, 'Unknown')
+    
+    impacts = []
+    
+    # 1. تحليل التغير الكيميائي
+    if h_type != m_type:
+        if "Acidic" in h_type and "Basic" in m_type or "Basic" in h_type and "Acidic" in m_type:
+            impacts.append("Charge Flip (Critical)")
+        else:
+            impacts.append("Chem-Class Change")
+    
+    # 2. تحليل التغير في المساحة (SASA)
+    try:
+        diff = m_sasa - h_sasa
+        if abs(diff) > 10:
+            impacts.append("Exposed" if diff > 0 else "Buried")
+    except:
+        pass
+        
+    return " | ".join(impacts) if impacts else "Minor Change"
 # ============================
 # دوال مساعدة
 # ============================
 @st.cache_data(ttl=3600)
 def fetch_pdb_data(pdb_id):
+    """جلب بيانات بنية البروتين من المجلد المحلي أو من قاعدة بيانات PDB العالمية."""
     if not pdb_id or pdb_id == "NONE":
         return None  
-    # 1. البحث في المجلد المحلي أولاً
+    
     local_dir = "Protein_Database_100"
     local_file_path = os.path.join(local_dir, f"pdb{pdb_id.lower()}.ent")
     
@@ -51,22 +70,24 @@ def fetch_pdb_data(pdb_id):
         try:
             with open(local_file_path, "r", encoding="utf-8") as f:
                 return f.read()
-        except Exception:
-            pass
-    # 2. في حال لم يكن موجوداً محلياً، جلبه من الإنترنت
+        except Exception as error:
+            st.warning(f"لم يتم العثور على البروتين في المجلد المحلي: {error}")
+
     url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
     try:
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             return response.text
         else:
+            st.error(f"لم يتم العثور على البروتين (PDB ID: {pdb_id}) في قاعدة البيانات العالمية.")
             return None
-    except Exception as error:
+    except requests.exceptions.RequestException as error:
         st.error(f"خطأ في الاتصال بالسيرفر: {error}")
         return None
 
 @st.cache_data(ttl=3600)
 def process_protein_structure(pdb_string, pdb_id, keep_hetatm=False):
+    """معالجة نص PDB وتحويله إلى كائن بنية برمجية مع إمكانية تصفية الجزيئات غير البروتينية."""
     try:
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure(pdb_id, StringIO(pdb_string))
@@ -75,21 +96,29 @@ def process_protein_structure(pdb_string, pdb_id, keep_hetatm=False):
                 for chain in model:
                     for r_id in [r.get_id() for r in chain if r.get_id()[0] != ' ']:
                         chain.detach_child(r_id)
+        
+        # حساب SASA مرة واحدة عند المعالجة لخدمة جميع الدوال لاحقاً
+        try:
+            sr = ShrakeRupley()
+            sr.compute(structure, level='R')
+        except:
+            pass
+            
         return structure
     except Exception as error:
-        st.error(f"خطأ في قراءة البنية: {error}")
+        st.error(f"خطأ في قراءة بنية البروتين: {error}")
         return None
 
-
 def get_all_chains(structure):
+    """استخراج جميع معرفات السلاسل الموجودة في بنية البروتين."""
     try:
         return [chain.id for chain in structure[0]]
     except Exception as ex:
         st.error(f"فشل قراءة السلاسل: {ex}")
         return []
 
-
 def get_protein_sequence(structure, chain_id):
+    """استخراج تسلسل الأحماض الأمينية لسلسلة محددة مع أرقامها."""
     sequence = []
     try:
         model = structure[0]
@@ -101,19 +130,17 @@ def get_protein_sequence(structure, chain_id):
                         'res_name': residue.get_resname()
                     })
     except Exception as ex:
-        st.error(f"Failed to read sequence for chain {chain_id}: {ex}")
+        st.error(f"فشل قراءة التسلسل للسلسلة {chain_id}: {ex}")
     return sequence
 
-
 def sequence_to_fasta(structure, chain_id, protein_name="protein"):
+    """تحويل تسلسل السلسلة إلى تنسيق FASTA القياسي."""
     seq_data = get_protein_sequence(structure, chain_id)
-    if not seq_data:
-        return None
+    if not seq_data: return None
     one_letter = ''.join([AA_3TO1.get(r['res_name'], 'X') for r in seq_data])
     lines = [one_letter[i:i+80] for i in range(0, len(one_letter), 80)]
     header = f">{protein_name}|Chain_{chain_id}|length={len(one_letter)}\n"
-    body = '\n'.join(lines) + '\n'
-    return header + body
+    return header + '\n'.join(lines) + '\n'
 
 #البحث عن الجزيئات المتجاورة
 @st.cache_data(ttl=3600)
@@ -125,10 +152,6 @@ def calculate_all_distances(_structure_key, pdb_string, chain_id, radius=5.0, ke
         model = structure[0]
         if chain_id not in [c.id for c in model]:
             return []
-
-        # SASA
-        sr = ShrakeRupley()
-        sr.compute(structure, level='R')
 
         # استخراج كافة الذرات وإحداثياتها
         all_atoms = list(model.get_atoms())
@@ -180,8 +203,7 @@ def calculate_all_distances(_structure_key, pdb_string, chain_id, radius=5.0, ke
                 'res_num'        : target_res_id,
                 'res_name'       : resname,
                 'one_letter'     : AA_3TO1.get(resname, 'X'),
-                'properties'     : AA_PROPS.get(resname, '-'),
-                'nearby_count'   : len(nearby_indices),
+                'class'          : AA_PROPS.get(resname, '-'),
                 'min_dist'       : min_dist,
                 'sasa'           : sasa_val
             })
@@ -192,25 +214,31 @@ def calculate_all_distances(_structure_key, pdb_string, chain_id, radius=5.0, ke
         st.error(f"خطأ أثناء حساب المسافات: {error}")
         return []
 
+def calculate_sasa_map(structure, chain_id):
+    """
+    Computes the Solvent Accessible Surface Area (SASA) for all residues in a chain.
+    Returns a dictionary mapping residue numbers to their SASA values.
+    """
+    try:
+        sasa_map = {}
+        for res in structure[0][chain_id]:
+            if res.id[0] == ' ':
+                sasa_map[res.id[1]] = round(getattr(res, 'sasa', 0), 2)
+        return sasa_map
+    except Exception:
+        return {}
+
 
 def render_protein_3d(pdb_string, bg_color='#0E1117', style_type='cartoon',
                       show_surface=True, surface_opacity=0.3, mutations=None,
                       mut_color='red', zoom_to_mutations=False,
                       focus_mut=None, keep_hetatm=False):
+    """توليد كود HTML لعرض بنية البروتين ثلاثية الأبعاد باستخدام py3Dmol."""
     view = py3Dmol.view(width="100%", height=450)
     view.addModel(pdb_string, 'pdb')
     view.setBackgroundColor(bg_color)
 
-    style_dict = {}
-    if style_type == 'cartoon':
-        style_dict['cartoon'] = {'color': 'spectrum'}
-    elif style_type == 'stick':
-        style_dict['stick'] = {'color': 'spectrum'}
-    elif style_type == 'sphere':
-        style_dict['sphere'] = {'color': 'spectrum'}
-    else:
-        style_dict['cartoon'] = {'color': 'spectrum'}
-
+    style_dict = {style_type: {'color': 'spectrum'}}
     view.setStyle({'model': -1}, style_dict)
 
     if keep_hetatm:
@@ -234,44 +262,31 @@ def render_protein_3d(pdb_string, bg_color='#0E1117', style_type='cartoon',
 
     return view._make_html()
 
-
 def get_alignment(seq1, seq2, mode='global'):
+    """إجراء محاذاة تسلسلية بين بروتينين وحساب نقاط التشابه."""
     aligner = PairwiseAligner()
     aligner.mode = mode
     try:
         best_aln = aligner.align(seq1, seq2)[0]
+        return str(best_aln), best_aln.score, best_aln[0], best_aln[1]
     except Exception as error:
-        st.warning(f"فشل إجراء المحاذاة: {error}")
+        st.warning(f"فشل إجراء المحاذاة التسلسلية: {error}")
         return "", 0, "", ""
-    return str(best_aln), best_aln.score, best_aln[0], best_aln[1]
-
 
 REMOTE_JSON_URL = "https://raw.githubusercontent.com/hassan2006-web/Bio-project/refs/heads/main/mutations.json"
 
 @st.cache_data(ttl=300)
 def load_mutation_db():
-    url_with_cache_bypass = f"{REMOTE_JSON_URL}?t={int(time.time())}"
+    """تحميل قاعدة بيانات الطفرات المؤتمتة من سيرفر GitHub."""
+    url = f"{REMOTE_JSON_URL}?t={int(time.time())}"
     try:
-        response = requests.get(url_with_cache_bypass, timeout=5)
+        response = requests.get(url, timeout=5)
         if response.status_code == 200:
             return response.json()
     except Exception:
         pass
-
-    json_path = 'mutations.json'
-    if os.path.exists(json_path):
-        try:
-            with open(json_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            pass
     return {}
 
-def auto_fill_healthy():
-    mutation_db = load_mutation_db()  # آمن لأنها دالة مخزنة (cached)
-    m_id = st.session_state.get('m_id_in', '').upper().strip()
-    if m_id in mutation_db:
-        st.session_state['h_id_in'] = mutation_db[m_id]
 # ========================
 # مكونات واجهة المستخدم 
 # ========================
@@ -286,11 +301,21 @@ def protein_ui_panel(p, keep_hetatm):
         source = st.radio("المصدر:", ["PDB ID", "رفع ملف"], key=f"{p['prefix']}_src", horizontal=True)
 
         if source == "PDB ID":
-            on_change = auto_fill_healthy if p['prefix'] == 'm' else None
-            pdb_input = st.text_input("كود PDB:", key=f"{p['prefix']}_id_in", on_change=on_change).strip().upper()
+            pdb_input = st.text_input("كود PDB:", key=f"{p['prefix']}_id_in").strip().upper()
 
             if st.button(f"تحميل {p['label']}", key=f"btn_{p['prefix']}"):
                 with st.spinner('جاري التحميل...'):
+                    # أتمتة: إذا تم تحميل المصاب، ابحث عن السليم المقابل له
+                    if p['prefix'] == 'm':
+                        mdb = load_mutation_db()
+                        if pdb_input in mdb:
+                            h_id = mdb[pdb_input]
+                            st.session_state['h_id_in'] = h_id
+                            h_data = fetch_pdb_data(h_id)
+                            if h_data:
+                                st.session_state["h_pdb"] = h_data
+                                st.session_state["h_id"]  = h_id
+
                     data = fetch_pdb_data(pdb_input)
                     if data:
                         st.session_state[f"{p['prefix']}_pdb"] = data
@@ -300,14 +325,7 @@ def protein_ui_panel(p, keep_hetatm):
                             if k.startswith(p['prefix']) and k not in [f"{p['prefix']}_pdb", f"{p['prefix']}_id", f"{p['prefix']}_src", f"{p['prefix']}_id_in"]:
                                 st.session_state.pop(k, None)
                         
-                        if p['prefix'] == 'm':
-                            h_id = st.session_state.get('h_id_in', '').upper().strip()
-                            if h_id and not st.session_state.get('h_pdb'):
-                                h_data = fetch_pdb_data(h_id)
-                                if h_data:
-                                    st.session_state["h_pdb"] = h_data
-                                    st.session_state["h_id"]  = h_id
-                                    st.rerun()
+                        st.rerun()
                     else:
                         st.error(f"لم يتم العثور على البروتين بالكود: {pdb_input}")
         else:
@@ -321,14 +339,13 @@ def protein_ui_panel(p, keep_hetatm):
 
 
 def initialize_session_state():
-    """
-    تهيئة المتغيرات الأساسية في session_state لتجنب الأخطاء.
-    """
+    """Initializes all necessary session state variables for the application."""
     defaults = {
         'h_pdb': None, 'm_pdb': None,
         'h_id': '', 'm_id': '',
         'h_results': None, 'm_results': None,
-        'h_selected_chain': None, 'm_selected_chain': None
+        'h_selected_chain': None, 'm_selected_chain': None,
+        'h_id_in': '', 'm_id_in': ''
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -336,29 +353,30 @@ def initialize_session_state():
 
 
 def main():
-
     st.set_page_config(page_title="Bio-Impact Analyzer", page_icon="🧬", layout="wide")
     initialize_session_state()
     st.title("🧬 Bio-Impact Analyzer")
 
-    # ── Sidebar ──
-    st.sidebar.header("⚙️ إعدادات التحليل")
-    search_radius  = st.sidebar.slider("🔍 نصف قطر البحث (Å)", 3.0, 12.0, 5.0)
-    view_style     = st.sidebar.selectbox("🎨 نمط العرض", ["cartoon", "stick", "sphere"])
-    show_surf      = st.sidebar.checkbox("إظهار السطح (Surface)", value=False)
-    surface_op     = st.sidebar.slider("شفافية السطح", 0.0, 1.0, 0.3)
-    show_mutations = st.sidebar.checkbox("🧬 تلوين الطفرات", value=False)
-    zoom_mutations = st.sidebar.checkbox("🔍 تركيز العرض على الطفرات", value=False)
-    st.sidebar.divider()
-    st.sidebar.subheader("🌟 إضافات التحليل المتقدم")
-    keep_hetatm = st.sidebar.checkbox("💊 الإبقاء على الأدوية (Ligands)", value=False)
-    align_mode  = st.sidebar.selectbox("🧬 نوع المحاذاة (Alignment)", ["global", "local"])
-    st.sidebar.warning("التحليل الهيكلي يشمل البحث في جميع سلاسل البروتين.")
+    # ── Sidebar Configuration ──
+    st.sidebar.header("⚙️ التحليل والإعدادات")
+    with st.sidebar.expander("🎨 خيارات العرض", expanded=True):
+        search_radius  = st.slider("🔍 نصف قطر البحث (Å)", 3.0, 12.0, 5.0)
+        view_style     = st.selectbox("نمط العرض", ["cartoon", "stick", "sphere"])
+        show_surf      = st.checkbox("إظهار السطح (Surface)", value=False)
+        surface_op     = st.slider("شفافية السطح", 0.0, 1.0, 0.3)
+    
+    with st.sidebar.expander("🧬 خيارات الطفرات والمحاذاة", expanded=False):
+        show_mutations = st.checkbox("تلوين الطفرات", value=True)
+        zoom_mutations = st.checkbox("تركيز العرض على الطفرات", value=False)
+        align_mode     = st.selectbox("نوع المحاذاة (Alignment)", ["global", "local"])
+        keep_hetatm    = st.checkbox("💊 الإبقاء على الأدوية (Ligands)", value=False)
+
+    st.sidebar.info("التحليل الهيكلي يشمل البحث في جميع سلاسل البروتين المختارة.")
 
     col1, col2 = st.columns(2)
     proteins = [
-        {"label": "السليم", "prefix": "h", "col": col1, "bg": "#0D1B1E"},
-        {"label": "المصاب", "prefix": "m", "col": col2, "bg": "#1E0D0D"}
+        {"label": "المصاب", "prefix": "m", "col": col2, "bg": "#1E0D0D"},
+        {"label": "السليم", "prefix": "h", "col": col1, "bg": "#0D1B1E"}
     ]
 
     # 1. تحميل البيانات
@@ -371,8 +389,8 @@ def main():
     v_col1, v_col2 = st.columns(2)
     structures  = {}
     
-    for i, p in enumerate(proteins):
-        current_col = v_col1 if i == 0 else v_col2
+    for p in proteins:
+        current_col = v_col1 if p['prefix'] == 'h' else v_col2
         with current_col:
             pdb_data = st.session_state.get(f"{p['prefix']}_pdb")
             if not pdb_data:
@@ -411,8 +429,8 @@ def main():
             highlight_map['h'] = mut_h if mut_h else None
 
     # العرض والتحليل
-    for i, p in enumerate(proteins):
-        current_col = v_col1 if i == 0 else v_col2
+    for p in proteins:
+        current_col = v_col1 if p['prefix'] == 'h' else v_col2
         with current_col:
             prefix = p['prefix']
             pdb_data = st.session_state.get(f"{prefix}_pdb")
@@ -466,8 +484,8 @@ def main():
                     df = pd.DataFrame(res)
                     # تحويل المسميات للعربية عند العرض فقط
                     df_display = df.rename(columns={
-                        'res_num': 'رقم البقية', 'res_name': 'الحمض', 'properties': 'الخصائص',
-                        'nearby_count': 'المجاورين', 'min_dist': 'أقرب مسافة', 'sasa': 'SASA'
+                        'res_num': 'رقم البقية', 'res_name': 'الحمض', 'class': 'الفئة الكيميائية',
+                        'min_dist': 'أقرب مسافة', 'sasa': 'SASA'
                     })
                     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
@@ -479,13 +497,35 @@ def main():
         m_seq = get_protein_sequence(structures['m'], m_chain)
         
         if h_seq and m_seq:
+            # حساب SASA للسلسلتين
+            h_sasa = calculate_sasa_map(structures['h'], h_chain)
+            m_sasa = calculate_sasa_map(structures['m'], m_chain)
+
             df_h = pd.DataFrame(h_seq).rename(columns={'res_name': 'السليم'})
             df_m = pd.DataFrame(m_seq).rename(columns={'res_name': 'المصاب'})
+            
+            # دمج البيانات
             df_comp = pd.merge(df_h, df_m, on='res_num', how='outer').sort_values('res_num').fillna('-')
+            
+            # إضافة قيم SASA والتحليل العلمي
+            df_comp['SASA_H'] = df_comp['res_num'].map(lambda x: h_sasa.get(x, 0))
+            df_comp['SASA_M'] = df_comp['res_num'].map(lambda x: m_sasa.get(x, 0))
+            df_comp['SASA_Delta'] = df_comp['SASA_M'] - df_comp['SASA_H']
+            
+            df_comp['Impact'] = df_comp.apply(lambda r: analyze_impact(r['السليم'], r['المصاب'], r['SASA_H'], r['SASA_M']), axis=1)
+            
             df_comp['الحالة'] = df_comp.apply(lambda r: '🔴 طفرة' if r['السليم'] != r['المصاب'] else '🟢 محافظ', axis=1)
             
-            with st.expander("جدول المقارنة "):
-                st.dataframe(df_comp.rename(columns={'res_num': 'الرقم'}).style.apply(lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r), axis=1), use_container_width=True, hide_index=True)
+            with st.expander("جدول المقارنة المتقدم (Structural & Chemical Impact)"):
+                # تحسين أسماء الأعمدة للعرض
+                df_disp = df_comp.rename(columns={
+                    'res_num': 'الرقم',
+                    'SASA_H': 'SASA H',
+                    'SASA_M': 'SASA M',
+                    'SASA_Delta': 'ΔSASA',
+                    'Impact': 'نوع التأثير العلمي'
+                })
+                st.dataframe(df_disp.style.apply(lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r), axis=1), use_container_width=True, hide_index=True)
 
             # Alignment
             st.header(f"🧬 Alignment ({align_mode.capitalize()})")
@@ -499,6 +539,74 @@ def main():
             sc2.metric("Identity %", f"{identity:.1f}%")
             sc3.metric("فرق الطول", abs(len(h_str) - len(m_str)))
             st.code(aln_text, language='text')
+
+            # ── توليد التقرير  ──
+            st.divider()
+            
+            # حساب إحصائيات إضافية للتقرير
+            total_mutations = len(df_comp[df_comp['الحالة'] == '🔴 طفرة'])
+            
+            report_content = f"""
+============================================================
+              BIO-IMPACT ANALYZER - TECHNICAL REPORT
+============================================================
+Generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}
+Project ID  : BIO-{st.session_state.get('m_id', 'UNKNOWN')}
+------------------------------------------------------------
+
+[1] EXECUTIVE SUMMARY
+---------------------
+- Total Residues Analyzed : {len(df_comp)}
+- Sequence Identity       : {identity:.2f}%
+- Alignment Score         : {round(score, 2)}
+- Mutation Count          : {total_mutations}
+- Status                  : {'Significant Variance' if identity < 95 else 'High Similarity'}
+
+[2] PROTEIN METADATA
+--------------------
+HEALTHY REFERENCE (السليم):
+  - Source ID    : {st.session_state.get('h_id', 'N/A')}
+  - Chain        : {h_chain}
+  - Length       : {len(h_str)} AA
+
+MUTATED SAMPLE (المصاب):
+  - Source ID    : {st.session_state.get('m_id', 'N/A')}
+  - Chain        : {m_chain}
+  - Length       : {len(m_str)} AA
+
+[3] MUTATION ANALYSIS TABLE (Sequence & SASA)
+-------------------------------------------
+{'Pos'.ljust(6)} | {'Healthy'.ljust(8)} | {'S-H'.ljust(6)} | {'Mutated'.ljust(8)} | {'S-M'.ljust(6)} | {'Delta'.ljust(6)} | {'Impact'}
+{'-' * 80}
+"""
+            # إضافة الطفرات بشكل جدولي منظم مع Delta SASA
+            mutations = df_comp[df_comp['الحالة'] == '🔴 طفرة']
+            for _, row in mutations.iterrows():
+                report_content += f"{str(row['res_num']).ljust(6)} | {str(row['السليم']).ljust(8)} | {str(row['SASA_H']).ljust(6)} | {str(row['المصاب']).ljust(8)} | {str(row['SASA_M']).ljust(6)} | {str(round(row['SASA_Delta'], 2)).ljust(6)} | {row['Impact']}\n"
+
+            report_content += f"""
+[4] STRUCTURAL IMPACT PREDICTION
+--------------------------------
+- Gap Count        : {aln_text.count('-')}
+- Length Delta     : {abs(len(h_str) - len(m_str))}
+- Sequence Coverage: { (len(aln_text.replace('-', '')) / (len(h_str)+len(m_str)) * 200):.1f}%
+
+[5] DETAILED SEQUENCE ALIGNMENT
+-------------------------------
+{aln_text}
+
+============================================================
+                END OF TECHNICAL REPORT
+============================================================
+"""
+            st.download_button(
+                label="📥 تحميل التقرير عن الحالة  ",
+                data=report_content,
+                file_name=f"Professional_Report_{st.session_state.get('m_id', 'BIO')}.txt",
+                mime="text/plain",
+                type="primary",
+                use_container_width=True
+            )
 
 if __name__ == "__main__":
     main()
