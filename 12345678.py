@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import requests
 import numpy as np
@@ -12,6 +11,9 @@ from Bio.Align import PairwiseAligner
 import streamlit as st
 import streamlit.components.v1 as components
 import py3Dmol
+import plotly.express as px
+import plotly.graph_objects as go
+
 # ============================
 # ثوابت
 # ============================
@@ -22,8 +24,10 @@ AA_3TO1 = {
     'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'
 }
 AA_PROPS = {
-    'ALA': 'Non-polar', 'GLY': 'Non-polar', 'ILE': 'Non-polar', 'LEU': 'Non-polar', 'MET': 'Non-polar', 'PRO': 'Non-polar', 'VAL': 'Non-polar',
-    'ASN': 'Polar',     'CYS': 'Polar',     'GLN': 'Polar',     'SER': 'Polar',     'THR': 'Polar',
+    'ALA': 'Non-polar',  'GLY': 'Non-polar', 'ILE': 'Non-polar', 
+    'LEU': 'Non-polar',  'MET': 'Non-polar', 'PRO': 'Non-polar',
+    'VAL': 'Non-polar',  'ASN': 'Polar',     'CYS': 'Polar',   
+    'GLN': 'Polar',      'SER': 'Polar',     'THR': 'Polar',
     'ASP': 'Acidic (-)', 'GLU': 'Acidic (-)',
     'ARG': 'Basic (+)',  'HIS': 'Basic (+)',  'LYS': 'Basic (+)',
     'PHE': 'Aromatic',   'TRP': 'Aromatic',   'TYR': 'Aromatic'
@@ -70,12 +74,11 @@ def fetch_pdb_data(pdb_id):
         try:
             with open(local_file_path, "r", encoding="utf-8") as f:
                 return f.read()
-        except Exception as error:
-            st.warning(f"لم يتم العثور على البروتين في المجلد المحلي: {error}")
-
+        except:
+            pass
     url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=120)
         if response.status_code == 200:
             return response.text
         else:
@@ -215,10 +218,6 @@ def calculate_all_distances(_structure_key, pdb_string, chain_id, radius=5.0, ke
         return []
 
 def calculate_sasa_map(structure, chain_id):
-    """
-    Computes the Solvent Accessible Surface Area (SASA) for all residues in a chain.
-    Returns a dictionary mapping residue numbers to their SASA values.
-    """
     try:
         sasa_map = {}
         for res in structure[0][chain_id]:
@@ -228,8 +227,10 @@ def calculate_sasa_map(structure, chain_id):
     except Exception:
         return {}
 
-
-def render_protein_3d(pdb_string, bg_color='#0E1117', style_type='cartoon',
+# ----------------------------
+# العرض ثلاثي الأبعاد
+# ----------------------------
+def render_protein_3d(pdb_string, bg_color='#111', style_type='cartoon',
                       show_surface=True, surface_opacity=0.3, mutations=None,
                       mut_color='red', zoom_to_mutations=False,
                       focus_mut=None, keep_hetatm=False):
@@ -275,9 +276,8 @@ def get_alignment(seq1, seq2, mode='global'):
 
 REMOTE_JSON_URL = "https://raw.githubusercontent.com/hassan2006-web/Bio-project/refs/heads/main/mutations.json"
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def load_mutation_db():
-    """تحميل قاعدة بيانات الطفرات المؤتمتة من سيرفر GitHub."""
     url = f"{REMOTE_JSON_URL}?t={int(time.time())}"
     try:
         response = requests.get(url, timeout=5)
@@ -488,6 +488,20 @@ def main():
                         'min_dist': 'أقرب مسافة', 'sasa': 'SASA'
                     })
                     st.dataframe(df_display, use_container_width=True, hide_index=True)
+                    
+                    # مخطط بياني مبسط لـ SASA باستخدام Plotly
+                    st.subheader("📈 توزيع SASA على طول التسلسل")
+                    fig = px.line(df, x='res_num', y='sasa', 
+                                 labels={'res_num': 'Residue', 'sasa': 'SASA'},
+                                 hover_data={'res_num': True, 'res_name': True, 'sasa': ':.1f'})
+                    fig.update_traces(line_color='#00d4ff', line_width=2)
+                    fig.update_layout(template="plotly_dark", 
+                                    height=300,
+                                    margin=dict(l=0, r=0, t=10, b=0),
+                                    xaxis=dict(showgrid=False), 
+                                    yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)'))
+                    st.plotly_chart(fig, use_container_width=True)
+
 
     # المقارنة
     if structures.get('h') and structures.get('m') and h_chain and m_chain:
@@ -527,6 +541,26 @@ def main():
                 })
                 st.dataframe(df_disp.style.apply(lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r), axis=1), use_container_width=True, hide_index=True)
 
+            # مخطط مقارنة مبسط لـ SASA
+            st.subheader("📊 مقارنة SASA (السليم vs المصاب)")
+            fig_comp = go.Figure()
+            fig_comp.add_trace(go.Scatter(x=df_comp['res_num'], y=df_comp['SASA_H'], 
+                                        mode='lines', name='Healthy',
+                                        line=dict(color='#4CAF50', width=1.5)))
+            fig_comp.add_trace(go.Scatter(x=df_comp['res_num'], y=df_comp['SASA_M'], 
+                                        mode='lines', name='Mutant',
+                                        line=dict(color='#F44336', width=1.5)))
+            
+            fig_comp.update_layout(template="plotly_dark", 
+                                 height=350,
+                                 hovermode="x",
+                                 margin=dict(l=0, r=0, t=10, b=0),
+                                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                 xaxis=dict(showgrid=False),
+                                 yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)'))
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+
             # Alignment
             st.header(f"🧬 Alignment ({align_mode.capitalize()})")
             h_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in h_seq])
@@ -539,74 +573,6 @@ def main():
             sc2.metric("Identity %", f"{identity:.1f}%")
             sc3.metric("فرق الطول", abs(len(h_str) - len(m_str)))
             st.code(aln_text, language='text')
-
-            # ── توليد التقرير  ──
-            st.divider()
-            
-            # حساب إحصائيات إضافية للتقرير
-            total_mutations = len(df_comp[df_comp['الحالة'] == '🔴 طفرة'])
-            
-            report_content = f"""
-============================================================
-              BIO-IMPACT ANALYZER - TECHNICAL REPORT
-============================================================
-Generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}
-Project ID  : BIO-{st.session_state.get('m_id', 'UNKNOWN')}
-------------------------------------------------------------
-
-[1] EXECUTIVE SUMMARY
----------------------
-- Total Residues Analyzed : {len(df_comp)}
-- Sequence Identity       : {identity:.2f}%
-- Alignment Score         : {round(score, 2)}
-- Mutation Count          : {total_mutations}
-- Status                  : {'Significant Variance' if identity < 95 else 'High Similarity'}
-
-[2] PROTEIN METADATA
---------------------
-HEALTHY REFERENCE (السليم):
-  - Source ID    : {st.session_state.get('h_id', 'N/A')}
-  - Chain        : {h_chain}
-  - Length       : {len(h_str)} AA
-
-MUTATED SAMPLE (المصاب):
-  - Source ID    : {st.session_state.get('m_id', 'N/A')}
-  - Chain        : {m_chain}
-  - Length       : {len(m_str)} AA
-
-[3] MUTATION ANALYSIS TABLE (Sequence & SASA)
--------------------------------------------
-{'Pos'.ljust(6)} | {'Healthy'.ljust(8)} | {'S-H'.ljust(6)} | {'Mutated'.ljust(8)} | {'S-M'.ljust(6)} | {'Delta'.ljust(6)} | {'Impact'}
-{'-' * 80}
-"""
-            # إضافة الطفرات بشكل جدولي منظم مع Delta SASA
-            mutations = df_comp[df_comp['الحالة'] == '🔴 طفرة']
-            for _, row in mutations.iterrows():
-                report_content += f"{str(row['res_num']).ljust(6)} | {str(row['السليم']).ljust(8)} | {str(row['SASA_H']).ljust(6)} | {str(row['المصاب']).ljust(8)} | {str(row['SASA_M']).ljust(6)} | {str(round(row['SASA_Delta'], 2)).ljust(6)} | {row['Impact']}\n"
-
-            report_content += f"""
-[4] STRUCTURAL IMPACT PREDICTION
---------------------------------
-- Gap Count        : {aln_text.count('-')}
-- Length Delta     : {abs(len(h_str) - len(m_str))}
-- Sequence Coverage: { (len(aln_text.replace('-', '')) / (len(h_str)+len(m_str)) * 200):.1f}%
-
-[5] DETAILED SEQUENCE ALIGNMENT
--------------------------------
-{aln_text}
-
-============================================================
-                END OF TECHNICAL REPORT
-============================================================
-"""
-            st.download_button(
-                label="📥 تحميل التقرير عن الحالة  ",
-                data=report_content,
-                file_name=f"Professional_Report_{st.session_state.get('m_id', 'BIO')}.txt",
-                mime="text/plain",
-                type="primary",
-                use_container_width=True
-            )
 
 if __name__ == "__main__":
     main()
