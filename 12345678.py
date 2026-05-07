@@ -489,18 +489,7 @@ def main():
                     })
                     st.dataframe(df_display, use_container_width=True, hide_index=True)
                     
-                    # مخطط بياني مبسط لـ SASA باستخدام Plotly
-                    st.subheader("📈 توزيع SASA على طول التسلسل")
-                    fig = px.line(df, x='res_num', y='sasa', 
-                                 labels={'res_num': 'Residue', 'sasa': 'SASA'},
-                                 hover_data={'res_num': True, 'res_name': True, 'sasa': ':.1f'})
-                    fig.update_traces(line_color='#00d4ff', line_width=2)
-                    fig.update_layout(template="plotly_dark", 
-                                    height=300,
-                                    margin=dict(l=0, r=0, t=10, b=0),
-                                    xaxis=dict(showgrid=False), 
-                                    yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)'))
-                    st.plotly_chart(fig, use_container_width=True)
+
 
 
     # المقارنة
@@ -541,24 +530,47 @@ def main():
                 })
                 st.dataframe(df_disp.style.apply(lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r), axis=1), use_container_width=True, hide_index=True)
 
-            # مخطط مقارنة مبسط لـ SASA
-            st.subheader("📊 مقارنة SASA (السليم vs المصاب)")
-            fig_comp = go.Figure()
-            fig_comp.add_trace(go.Scatter(x=df_comp['res_num'], y=df_comp['SASA_H'], 
-                                        mode='lines', name='Healthy',
-                                        line=dict(color='#4CAF50', width=1.5)))
-            fig_comp.add_trace(go.Scatter(x=df_comp['res_num'], y=df_comp['SASA_M'], 
-                                        mode='lines', name='Mutant',
-                                        line=dict(color='#F44336', width=1.5)))
+            st.subheader("📊 مقارنة SASA المتقدمة")
+            f_comp = go.Figure()
             
-            fig_comp.update_layout(template="plotly_dark", 
-                                 height=350,
-                                 hovermode="x",
-                                 margin=dict(l=0, r=0, t=10, b=0),
-                                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                 xaxis=dict(showgrid=False),
-                                 yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)'))
-            st.plotly_chart(fig_comp, use_container_width=True)
+            # رسم المساحة المظللة بين المنحنيين (Delta SASA)
+            f_comp.add_trace(go.Scatter(
+                x=df_comp['res_num'], y=df_comp['SASA_H'],
+                name='البروتين السليم (WT)',
+                line=dict(color='#00ff88', width=2),
+                fill=None
+            ))
+            f_comp.add_trace(go.Scatter(
+                x=df_comp['res_num'], y=df_comp['SASA_M'],
+                name='البروتين المصاب (MT)',
+                line=dict(color='#ff3333', width=2),
+                fill='tonexty', # تظليل الفرق بين المنحنيين
+                fillcolor='rgba(255, 51, 51, 0.1)'
+            ))
+
+            # إضافة نقاط لتمييز أماكن الطفرات بالضبط على الرسم البياني
+            mutations_df = df_comp[df_comp['السليم'] != df_comp['المصاب']]
+            if not mutations_df.empty:
+                f_comp.add_trace(go.Scatter(
+                    x=mutations_df['res_num'],
+                    y=mutations_df['SASA_M'],
+                    mode='markers',
+                    name='مواقع الطفرات',
+                    marker=dict(color='yellow', size=10, symbol='star', line=dict(color='black', width=1)),
+                    hovertemplate="رقم الحمض: %{x}<br>من: %{customdata[0]}<br>إلى: %{customdata[1]}<br>التأثير: %{customdata[2]}<extra></extra>",
+                    customdata=mutations_df[['السليم', 'المصاب', 'Impact']].values
+                ))
+
+            f_comp.update_layout(
+                template="plotly_dark",
+                height=450,
+                hovermode="x unified",
+                xaxis=dict(title="", rangeslider=dict(visible=True)),
+                yaxis=dict(title="SASA (Å²)"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=0, r=0, t=30, b=0)
+            )
+            st.plotly_chart(f_comp, use_container_width=True)
 
 
             # Alignment
