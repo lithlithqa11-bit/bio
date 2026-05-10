@@ -75,18 +75,7 @@ def analyze_impact(h_res, m_res, h_sasa, m_sasa):
 def fetch_pdb_data(pdb_id):
     """جلب بيانات بنية البروتين من المجلد المحلي أو من قاعدة بيانات PDB العالمية (RCSB) باستخدام المعرف الخاص به."""
     if not pdb_id or pdb_id == "NONE":
-        return None  
-    
-    local_dir = "Protein_Database_100"
-    local_file_path = os.path.join(local_dir, f"pdb{pdb_id.lower()}.ent")
-    
-    # المحاولة من الملفات المحلية أولاً لتوفير الوقت
-    if os.path.exists(local_file_path):
-        try:
-            with open(local_file_path, "r", encoding="utf-8") as f:
-                return f.read()
-        except:
-            pass
+        return None 
             
     # المحاولة من الإنترنت إذا لم يتوفر محلياً
     url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
@@ -317,7 +306,7 @@ def protein_ui_panel(p):
         source = st.radio("المصدر:", ["PDB ID", "رفع ملف"], key=f"{p['prefix']}_src", horizontal=True)
 
         if source == "PDB ID":
-            pdb_input = st.text_input("كود PDB:", key=f"{p['prefix']}_id_in").strip().upper()
+            pdb_input = st.text_input("كود PDB", key=f"{p['prefix']}_id_in").strip().upper()
 
             if st.button(f"تحميل {p['label']}", key=f"btn_{p['prefix']}"):
                 with st.spinner('جاري التحميل...'):
