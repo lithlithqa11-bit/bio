@@ -422,20 +422,43 @@ def main():
     h_chain = st.session_state.get('h_selected_chain')
     m_chain = st.session_state.get('m_selected_chain')
     
+    # --- قسم معالجة البيانات المشترك (Common Alignment Processing) ---
+    aln_data = None
     if structures.get('h') and structures.get('m') and h_chain and m_chain:
         h_seq = get_protein_sequence(structures['h'], h_chain)
         m_seq = get_protein_sequence(structures['m'], m_chain)
+        
         if h_seq and m_seq:
-            dict_h = {r['res_num']: r['res_name'] for r in h_seq}
-            dict_m = {r['res_num']: r['res_name'] for r in m_seq}
-            mut_m = []
-            mut_h = []
-            for res_num in set(dict_h) | set(dict_m):
-                if dict_h.get(res_num) != dict_m.get(res_num):
-                    if res_num in dict_m: mut_m.append({'resi': str(res_num), 'chain': str(m_chain)})
-                    if res_num in dict_h: mut_h.append({'resi': str(res_num), 'chain': str(h_chain)})
+            h_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in h_seq])
+            m_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in m_seq])
+            
+            # حساب المحاذاة مرة واحدة فقط للاستخدام في كامل التطبيق
+            aln_text, score, aln1, aln2 = get_alignment(h_str, m_str, align_mode)
+            aln_data = {
+                'text': aln_text, 'score': score, 
+                'aln1': aln1, 'aln2': aln2,
+                'h_seq': h_seq, 'm_seq': m_seq,
+                'h_str': h_str, 'm_str': m_str
+            }
+            
+            mut_h, mut_m = [], []
+            h_ptr, m_ptr = 0, 0
+            
+            # تحليل نتيجة المحاذاة لاستخراج الطفرات وتحديد أرقامها في الـ PDB
+            for char_h, char_m in zip(aln1, aln2):
+                h_res = h_seq[h_ptr] if char_h != '-' else None
+                m_res = m_seq[m_ptr] if char_m != '-' else None
+                
+                if char_h != char_m:
+                    if m_res: mut_m.append({'resi': str(m_res['res_num']), 'chain': str(m_chain)})
+                    if h_res: mut_h.append({'resi': str(h_res['res_num']), 'chain': str(h_chain)})
+                
+                if char_h != '-': h_ptr += 1
+                if char_m != '-': m_ptr += 1
+                
             highlight_map['m'] = mut_m if mut_m else None
             highlight_map['h'] = mut_h if mut_h else None
+
 
     # العرض التفاعلي ثلاثي الأبعاد والتحليل الرقمي
     for p in proteins:
@@ -506,26 +529,41 @@ def main():
         h_seq = get_protein_sequence(structures['h'], h_chain)
         m_seq = get_protein_sequence(structures['m'], m_chain)
         
-        if h_seq and m_seq:
-            # حساب خرائط SASA للسلسلتين
-            h_sasa = calculate_sasa_map(structures['h'], h_chain)
-            m_sasa = calculate_sasa_map(structures['m'], m_chain)
+        if aln_data:
+            # 1. حساب خرائط SASA للسلسلتين
+            h_sasa_map = calculate_sasa_map(structures['h'], h_chain)
+            m_sasa_map = calculate_sasa_map(structures['m'], m_chain)
 
-            df_h = pd.DataFrame(h_seq).rename(columns={'res_name': 'السليم'})
-            df_m = pd.DataFrame(m_seq).rename(columns={'res_name': 'المصاب'})
+            # 2. بناء الجدول بناءً على نتيجة المحاذاة المحسوبة مسبقاً
+            rows = []
+            h_p, m_p = 0, 0
+            for char_h, char_m in zip(aln_data['aln1'], aln_data['aln2']):
+                h_res = aln_data['h_seq'][h_p] if char_h != '-' else None
+                m_res = aln_data['m_seq'][m_p] if char_m != '-' else None
+                
+                h_name = h_res['res_name'] if h_res else '-'
+                m_name = m_res['res_name'] if m_res else '-'
+                # نستخدم رقم الحمض من المصاب كأولوية، أو السليم إذا كان المصاب فجوة
+                res_num = m_res['res_num'] if m_res else (f"({h_res['res_num']})" if h_res else '-')
+                
+                sasa_h = h_sasa_map.get(h_res['res_num'], 0) if h_res else 0
+                sasa_m = m_sasa_map.get(m_res['res_num'], 0) if m_res else 0
+                
+                rows.append({
+                    'res_num': res_num,
+                    'السليم': h_name,
+                    'المصاب': m_name,
+                    'SASA_H': sasa_h,
+                    'SASA_M': sasa_m,
+                    'SASA_Delta': round(sasa_m - sasa_h, 2),
+                    'الحالة': '🔴 طفرة' if h_name != m_name else '🟢 محافظ',
+                    'Impact': analyze_impact(h_name, m_name, sasa_h, sasa_m)
+                })
+                
+                if char_h != '-': h_p += 1
+                if char_m != '-': m_p += 1
             
-            # دمج البيانات في جدول واحد للمقارنة
-            df_comp = pd.merge(df_h, df_m, on='res_num', how='outer').sort_values('res_num').fillna('-')
-            
-            # إضافة قيم SASA وحساب الفرق (Delta)
-            df_comp['SASA_H'] = df_comp['res_num'].map(lambda x: h_sasa.get(x, 0))
-            df_comp['SASA_M'] = df_comp['res_num'].map(lambda x: m_sasa.get(x, 0))
-            df_comp['SASA_Delta'] = df_comp['SASA_M'] - df_comp['SASA_H']
-            
-            # استدعاء دالة تحليل التأثير العلمي
-            df_comp['Impact'] = df_comp.apply(lambda r: analyze_impact(r['السليم'], r['المصاب'], r['SASA_H'], r['SASA_M']), axis=1)
-            
-            df_comp['الحالة'] = df_comp.apply(lambda r: '🔴 طفرة' if r['السليم'] != r['المصاب'] else '🟢 محافظ', axis=1)
+            df_comp = pd.DataFrame(rows)
             
             with st.expander("جدول المقارنة المتقدم (Structural & Chemical Impact)"):
                 df_disp = df_comp.rename(columns={
@@ -582,18 +620,12 @@ def main():
             )
             st.plotly_chart(f_comp, use_container_width=True)
 
-            # عرض المحاذاة التسلسلية (Sequence Alignment)
             st.header(f"🧬 Alignment ({align_mode.capitalize()})")
-            h_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in h_seq])
-            m_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in m_seq])
-            aln_text, score, aln1, aln2 = get_alignment(h_str, m_str, align_mode)
-            matches = sum(a == b and a != '-' for a, b in zip(aln1, aln2))
-            identity = (matches / len(aln1) * 100) if aln1 else 0
             sc1, sc2, sc3 = st.columns(3)
-            sc1.metric("Alignment Score", round(score, 1))
-            sc2.metric("Identity %", f"{identity:.1f}%")
-            sc3.metric("فرق الطول", abs(len(h_str) - len(m_str)))
-            st.code(aln_text, language='text')
+            sc1.metric("Alignment Score", round(aln_data['score'], 1))
+            sc2.metric("Identity %", f"{(sum(a == b and a != '-' for a, b in zip(aln_data['aln1'], aln_data['aln2'])) / len(aln_data['aln1']) * 100):.1f}%")
+            sc3.metric("فرق الطول", abs(len(aln_data['h_str']) - len(aln_data['m_str'])))
+            st.code(aln_data['text'], language='text')
 
 if __name__ == "__main__":
     main()
