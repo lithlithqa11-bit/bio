@@ -1,7 +1,6 @@
 # =========================
-# المكتبات الأساسية (Libraries)
+#       (Libraries)
 # =========================
-import os
 import time
 import requests
 import numpy as np
@@ -14,8 +13,13 @@ from Bio.Align import PairwiseAligner
 import streamlit as st
 import streamlit.components.v1 as components
 import py3Dmol
-import plotly.express as px
 import plotly.graph_objects as go
+
+
+#auto docking vina 
+#flask 
+#اتمته للملفات  مثل المعرف 
+
 
 # ============================
 # ثوابت (Constants)
@@ -37,47 +41,17 @@ AA_PROPS = {
     'PHE': 'Aromatic',   'TRP': 'Aromatic',   'TYR': 'Aromatic'
 }
 
-def analyze_impact(h_res, m_res, h_sasa, m_sasa):
-    
-    if h_res == m_res: return "Conservative" # لا يوجد تغيير (محافظ)
-    
-    h_type = AA_PROPS.get(h_res, 'Unknown')
-    m_type = AA_PROPS.get(m_res, 'Unknown')
-    
-    impacts = []
-    
-    # 1. تحليل التغير الكيميائي (مثل تغيير الشحنة)
-    if h_type != m_type:
-        if "Acidic" in h_type and "Basic" in m_type or "Basic" in h_type and "Acidic" in m_type:
-            impacts.append("Charge Flip (Critical)") # تغيير خطير في الشحنة
-        else:
-            impacts.append("Chem-Class Change") # تغيير في الفئة الكيميائية
-    
-    # 2. تحليل التغير في المساحة (SASA) - هل أصبح الحمض مكشوفاً أم مدفوناً؟
-    try:
-        diff = m_sasa - h_sasa
-        if abs(diff) > 10:
-            impacts.append("Exposed" if diff > 0 else "Buried")
-    except:
-        pass
-        
-    return " | ".join(impacts) if impacts else "Minor Change"
 
 # ============================
-# دوال مساعدة (Helper Functions)
+# جلب البيانات (Data Fetching)
 # ============================
 
 @st.cache_data(ttl=3600)
-
-# =========================
-# معالجة البيانات وجلبها (Data Processing)
-# =========================
 def fetch_pdb_data(pdb_id):
     """جلب بيانات بنية البروتين من المجلد المحلي أو من قاعدة بيانات PDB العالمية (RCSB) باستخدام المعرف الخاص به."""
     if not pdb_id or pdb_id == "NONE":
         return None 
             
-    # المحاولة من الإنترنت إذا لم يتوفر محلياً
     url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
     try:
         response = requests.get(url, timeout=120)
@@ -89,6 +63,26 @@ def fetch_pdb_data(pdb_id):
     except requests.exceptions.RequestException as error:
         st.error(f"خطأ في الاتصال بالسيرفر: {error}")
         return None
+
+# رابط لجلب بيانات الطفرات المعروفة من GitHub
+REMOTE_JSON_URL = "https://raw.githubusercontent.com/hassan2006-web/Bio-project/refs/heads/main/mutations.json"
+
+@st.cache_data(ttl=60)
+def load_mutation_db():
+    """تحميل قاعدة بيانات الطفرات الموثقة لربط البروتينات السليمة بالمصابة تلقائياً من GitHub."""
+    url = f"{REMOTE_JSON_URL}?t={int(time.time())}"
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return {}
+
+
+# ============================
+# معالجة البنية (Structure Processing)
+# ============================
 
 def process_protein_structure(pdb_string, pdb_id):
     """معالجة ملف PDB وتحويله إلى كائن برمجي (Structure Object) مع حساب SASA وتصفية العناصر غير المطلوبة."""
@@ -140,7 +134,6 @@ def get_protein_sequence(structure, chain_id):
 
 def sequence_to_fasta(structure, chain_id, protein_name="protein"):
     """تحويل تسلسل الأحماض الأمينية إلى تنسيق FASTA القياسي."""
-    """تحويل تسلسل البروتين إلى صيغة FASTA القياسية."""
     seq_data = get_protein_sequence(structure, chain_id)
     if not seq_data: return None
     one_letter = ''.join([AA_3TO1.get(r['res_name'], 'X') for r in seq_data])
@@ -230,9 +223,52 @@ def calculate_sasa_map(structure, chain_id):
     except Exception:
         return {}
 
-# ----------------------------
+
+# ============================
+# التحليل العلمي (Scientific Analysis)
+# ============================
+
+def analyze_impact(h_res, m_res, h_sasa, m_sasa):
+    """تحليل التأثير العلمي للطفرة بناءً على الخواص الكيميائية ومساحة السطح (SASA)."""
+    if h_res == m_res: return "Conservative" # لا يوجد تغيير (محافظ)
+    
+    h_type = AA_PROPS.get(h_res, 'Unknown')
+    m_type = AA_PROPS.get(m_res, 'Unknown')
+    
+    impacts = []
+    
+    # 1. تحليل التغير الكيميائي (مثل تغيير الشحنة)
+    if h_type != m_type:
+        if "Acidic" in h_type and "Basic" in m_type or "Basic" in h_type and "Acidic" in m_type:
+            impacts.append("Charge Flip (Critical)") # تغيير خطير في الشحنة
+        else:
+            impacts.append("Chem-Class Change") # تغيير في الفئة الكيميائية
+    
+    # 2. تحليل التغير في المساحة (SASA) - هل أصبح الحمض مكشوفاً أم مدفوناً؟
+    try:
+        diff = m_sasa - h_sasa
+        if abs(diff) > 10:
+            impacts.append("Exposed" if diff > 0 else "Buried")
+    except:
+        pass
+        
+    return " | ".join(impacts) if impacts else "Minor Change"
+
+def get_alignment(seq1, seq2, mode='global'):
+    """إجراء محاذاة تسلسلية (Sequence Alignment) بين بروتينين وحساب النتيجة باستخدام خوارزميات Biopython."""
+    aligner = PairwiseAligner()
+    aligner.mode = mode
+    try:
+        best_aln = aligner.align(seq1, seq2)[0]
+        return str(best_aln), best_aln.score, best_aln[0], best_aln[1]
+    except Exception as error:
+        st.warning(f"فشل إجراء المحاذاة التسلسلية: {error}")
+        return "", 0, "", ""
+
+
+# ============================
 # العرض ثلاثي الأبعاد (3D Visualization)
-# ----------------------------
+# ============================
 
 def render_protein_3d(pdb_string, bg_color='#111', style_type='cartoon',
                       show_surface=True, surface_opacity=0.3, mutations=None,
@@ -269,31 +305,6 @@ def render_protein_3d(pdb_string, bg_color='#111', style_type='cartoon',
 
     return view._make_html()
 
-def get_alignment(seq1, seq2, mode='global'):
-    """إجراء محاذاة تسلسلية (Sequence Alignment) بين بروتينين وحساب النتيجة باستخدام خوارزميات Biopython."""
-    aligner = PairwiseAligner()
-    aligner.mode = mode
-    try:
-        best_aln = aligner.align(seq1, seq2)[0]
-        return str(best_aln), best_aln.score, best_aln[0], best_aln[1]
-    except Exception as error:
-        st.warning(f"فشل إجراء المحاذاة التسلسلية: {error}")
-        return "", 0, "", ""
-
-# رابط لجلب بيانات الطفرات المعروفة من GitHub
-REMOTE_JSON_URL = "https://raw.githubusercontent.com/hassan2006-web/Bio-project/refs/heads/main/mutations.json"
-
-@st.cache_data(ttl=60)
-def load_mutation_db():
-    """تحميل قاعدة بيانات الطفرات الموثقة لربط البروتينات السليمة بالمصابة تلقائياً من GitHub."""
-    url = f"{REMOTE_JSON_URL}?t={int(time.time())}"
-    try:
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except Exception:
-        pass
-    return {}
 
 # =========================
 # واجهة المستخدم (User Interface)
@@ -320,7 +331,7 @@ def protein_ui_panel(p):
                             if h_data:
                                 st.session_state["h_pdb"] = h_data
                                 st.session_state["h_id"]  = h_id
-
+                                st.info(f"✅ تم تحميل البروتين السليم تلقائياً: {h_id}")
                     data = fetch_pdb_data(pdb_input)
                     if data:
                         st.session_state[f"{p['prefix']}_pdb"] = data
@@ -357,7 +368,6 @@ def initialize_session_state():
             st.session_state[key] = val
 
 
-
 # =========================
 # نقطة انطلاق التطبيق (App Entry Point)
 # =========================
@@ -370,15 +380,15 @@ def main():
     # ── إعدادات الشريط الجانبي (Sidebar) ──
     st.sidebar.header("⚙️ التحليل والإعدادات")
     with st.sidebar.expander("🎨 خيارات العرض", expanded=True):
-        search_radius  = st.slider("🔍 نصف قطر البحث (Å)", 3.0, 12.0, 5.0)
-        view_style     = st.selectbox("نمط العرض", ["cartoon", "stick", "sphere"])
-        show_surf      = st.checkbox("إظهار السطح (Surface)", value=False)
-        surface_op     = st.slider("شفافية السطح", 0.0, 1.0, 0.3)
+        search_radius    = st.slider("🔍 نصف قطر البحث (Å)", 3.0, 12.0, 5.0)
+        view_style       = st.selectbox("نمط العرض", ["cartoon", "stick", "sphere"])
+        show_surface     = st.checkbox("إظهار السطح (Surface)", value=False)
+        surface_opacity  = st.slider("شفافية السطح", 0.0, 1.0, 0.3)
     
     with st.sidebar.expander("🧬 خيارات الطفرات والمحاذاة", expanded=False):
-        show_mutations = st.checkbox("تلوين الطفرات", value=True)
-        zoom_mutations = st.checkbox("تركيز العرض على الطفرات", value=False)
-        align_mode     = st.selectbox("نوع المحاذاة (Alignment)", ["global", "local"])
+        show_mutations   = st.checkbox("تلوين الطفرات", value=True)
+        zoom_mutations   = st.checkbox("تركيز العرض على الطفرات", value=False)
+        alignment_mode   = st.selectbox("نوع المحاذاة (Alignment)", ["global", "local"])
 
     st.sidebar.info("التحليل الهيكلي يشمل البحث في جميع سلاسل البروتين المختارة.")
 
@@ -423,41 +433,41 @@ def main():
     m_chain = st.session_state.get('m_selected_chain')
     
     # --- قسم معالجة البيانات المشترك (Common Alignment Processing) ---
-    aln_data = None
+    alignment_data = None
     if structures.get('h') and structures.get('m') and h_chain and m_chain:
-        h_seq = get_protein_sequence(structures['h'], h_chain)
-        m_seq = get_protein_sequence(structures['m'], m_chain)
+        healthy_sequence = get_protein_sequence(structures['h'], h_chain)
+        mutant_sequence = get_protein_sequence(structures['m'], m_chain)
         
-        if h_seq and m_seq:
-            h_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in h_seq])
-            m_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in m_seq])
+        if healthy_sequence and mutant_sequence:
+            healthy_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in healthy_sequence])
+            mutant_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in mutant_sequence])
             
             # حساب المحاذاة مرة واحدة فقط للاستخدام في كامل التطبيق
-            aln_text, score, aln1, aln2 = get_alignment(h_str, m_str, align_mode)
-            aln_data = {
-                'text': aln_text, 'score': score, 
-                'aln1': aln1, 'aln2': aln2,
-                'h_seq': h_seq, 'm_seq': m_seq,
-                'h_str': h_str, 'm_str': m_str
+            alignment_text, score, aligned_healthy, aligned_mutant = get_alignment(healthy_str, mutant_str, alignment_mode)
+            alignment_data = {
+                'text': alignment_text, 'score': score, 
+                'aligned_healthy': aligned_healthy, 'aligned_mutant': aligned_mutant,
+                'healthy_seq': healthy_sequence, 'mutant_seq': mutant_sequence,
+                'healthy_str': healthy_str, 'mutant_str': mutant_str
             }
             
-            mut_h, mut_m = [], []
-            h_ptr, m_ptr = 0, 0
+            mutations_healthy, mutations_mutant = [], []
+            healthy_ptr, mutant_ptr = 0, 0
             
             # تحليل نتيجة المحاذاة لاستخراج الطفرات وتحديد أرقامها في الـ PDB
-            for char_h, char_m in zip(aln1, aln2):
-                h_res = h_seq[h_ptr] if char_h != '-' else None
-                m_res = m_seq[m_ptr] if char_m != '-' else None
+            for char_h, char_m in zip(aligned_healthy, aligned_mutant):
+                h_res = healthy_sequence[healthy_ptr] if char_h != '-' else None
+                m_res = mutant_sequence[mutant_ptr] if char_m != '-' else None
                 
                 if char_h != char_m:
-                    if m_res: mut_m.append({'resi': str(m_res['res_num']), 'chain': str(m_chain)})
-                    if h_res: mut_h.append({'resi': str(h_res['res_num']), 'chain': str(h_chain)})
+                    if m_res: mutations_mutant.append({'resi': str(m_res['res_num']), 'chain': str(m_chain)})
+                    if h_res: mutations_healthy.append({'resi': str(h_res['res_num']), 'chain': str(h_chain)})
                 
-                if char_h != '-': h_ptr += 1
-                if char_m != '-': m_ptr += 1
+                if char_h != '-': healthy_ptr += 1
+                if char_m != '-': mutant_ptr += 1
                 
-            highlight_map['m'] = mut_m if mut_m else None
-            highlight_map['h'] = mut_h if mut_h else None
+            highlight_map['m'] = mutations_mutant if mutations_mutant else None
+            highlight_map['h'] = mutations_healthy if mutations_healthy else None
 
 
     # العرض التفاعلي ثلاثي الأبعاد والتحليل الرقمي
@@ -484,7 +494,7 @@ def main():
             # استدعاء دالة العرض ثلاثي الأبعاد
             view_html = render_protein_3d(
                 pdb_data, bg_color=p['bg'], style_type=view_style,
-                show_surface=show_surf, surface_opacity=surface_op,
+                show_surface=show_surface, surface_opacity=surface_opacity,
                 mutations=highlight if show_mutations else None,
                 mut_color='#F44336' if prefix == 'm' else '#4CAF50',
                 zoom_to_mutations=zoom_mutations, focus_mut=focus_mut
@@ -493,10 +503,10 @@ def main():
 
             # عرض الإحصائيات (Metrics)
             total_res = sum(len([r for r in struct[0][c] if r.id[0] == ' ']) for c in get_all_chains(struct))
-            c1, c2, c3 = st.columns(3)
-            c1.metric("عدد السلاسل", len(get_all_chains(struct)))
-            c2.metric("إجمالي الأحماض", total_res)
-            c3.metric("السلسلة الحالية", selected_chain)
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+            metric_col1.metric("عدد السلاسل", len(get_all_chains(struct)))
+            metric_col2.metric("إجمالي الأحماض", total_res)
+            metric_col3.metric("السلسلة الحالية", selected_chain)
 
             # خيار تنزيل تسلسل FASTA
             fasta = sequence_to_fasta(struct, selected_chain, st.session_state.get(f"{prefix}_id", p['label']))
@@ -526,47 +536,47 @@ def main():
     if structures.get('h') and structures.get('m') and h_chain and m_chain:
         st.divider()
         st.header("📋 مقارنة السلسلة (Comparison)")
-        h_seq = get_protein_sequence(structures['h'], h_chain)
-        m_seq = get_protein_sequence(structures['m'], m_chain)
+        healthy_seq = get_protein_sequence(structures['h'], h_chain)
+        mutant_seq = get_protein_sequence(structures['m'], m_chain)
         
-        if aln_data:
+        if alignment_data:
             # 1. حساب خرائط SASA للسلسلتين
-            h_sasa_map = calculate_sasa_map(structures['h'], h_chain)
-            m_sasa_map = calculate_sasa_map(structures['m'], m_chain)
+            healthy_sasa_map = calculate_sasa_map(structures['h'], h_chain)
+            mutant_sasa_map = calculate_sasa_map(structures['m'], m_chain)
 
             # 2. بناء الجدول بناءً على نتيجة المحاذاة المحسوبة مسبقاً
             rows = []
-            h_p, m_p = 0, 0
-            for char_h, char_m in zip(aln_data['aln1'], aln_data['aln2']):
-                h_res = aln_data['h_seq'][h_p] if char_h != '-' else None
-                m_res = aln_data['m_seq'][m_p] if char_m != '-' else None
+            healthy_pos, mutant_pos = 0, 0
+            for char_h, char_m in zip(alignment_data['aligned_healthy'], alignment_data['aligned_mutant']):
+                h_res = alignment_data['healthy_seq'][healthy_pos] if char_h != '-' else None
+                m_res = alignment_data['mutant_seq'][mutant_pos] if char_m != '-' else None
                 
                 h_name = h_res['res_name'] if h_res else '-'
                 m_name = m_res['res_name'] if m_res else '-'
                 # نستخدم رقم الحمض من المصاب كأولوية، أو السليم إذا كان المصاب فجوة
                 res_num = m_res['res_num'] if m_res else (f"({h_res['res_num']})" if h_res else '-')
                 
-                sasa_h = h_sasa_map.get(h_res['res_num'], 0) if h_res else 0
-                sasa_m = m_sasa_map.get(m_res['res_num'], 0) if m_res else 0
+                sasa_healthy = healthy_sasa_map.get(h_res['res_num'], 0) if h_res else 0
+                sasa_mutant = mutant_sasa_map.get(m_res['res_num'], 0) if m_res else 0
                 
                 rows.append({
                     'res_num': res_num,
                     'السليم': h_name,
                     'المصاب': m_name,
-                    'SASA_H': sasa_h,
-                    'SASA_M': sasa_m,
-                    'SASA_Delta': round(sasa_m - sasa_h, 2),
+                    'SASA_H': sasa_healthy,
+                    'SASA_M': sasa_mutant,
+                    'SASA_Delta': round(sasa_mutant - sasa_healthy, 2),
                     'الحالة': '🔴 طفرة' if h_name != m_name else '🟢 محافظ',
-                    'Impact': analyze_impact(h_name, m_name, sasa_h, sasa_m)
+                    'Impact': analyze_impact(h_name, m_name, sasa_healthy, sasa_mutant)
                 })
                 
-                if char_h != '-': h_p += 1
-                if char_m != '-': m_p += 1
+                if char_h != '-': healthy_pos += 1
+                if char_m != '-': mutant_pos += 1
             
-            df_comp = pd.DataFrame(rows)
+            comparison_df = pd.DataFrame(rows)
             
             with st.expander("جدول المقارنة المتقدم (Structural & Chemical Impact)"):
-                df_disp = df_comp.rename(columns={
+                display_df = comparison_df.rename(columns={
                     'res_num': 'الرقم',
                     'SASA_H': 'SASA H',
                     'SASA_M': 'SASA M',
@@ -574,22 +584,22 @@ def main():
                     'Impact': 'نوع التأثير العلمي'
                 })
                 # تلوين السطور التي تحتوي على طفرات باللون الداكن
-                st.dataframe(df_disp.style.apply(lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r), axis=1), use_container_width=True, hide_index=True)
+                st.dataframe(display_df.style.apply(lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r), axis=1), use_container_width=True, hide_index=True)
 
             # رسم بياني لمقارنة SASA المتقدمة
             st.subheader("📊 مقارنة SASA المتقدمة")
-            f_comp = go.Figure()
+            sasa_figure = go.Figure()
             
             # رسم منحنى البروتين السليم
-            f_comp.add_trace(go.Scatter(
-                x=df_comp['res_num'], y=df_comp['SASA_H'],
+            sasa_figure.add_trace(go.Scatter(
+                x=comparison_df['res_num'], y=comparison_df['SASA_H'],
                 name='البروتين السليم (WT)',
                 line=dict(color='#00ff88', width=2),
                 fill=None
             ))
             # رسم منحنى البروتين المصاب مع تظليل الفرق
-            f_comp.add_trace(go.Scatter(
-                x=df_comp['res_num'], y=df_comp['SASA_M'],
+            sasa_figure.add_trace(go.Scatter(
+                x=comparison_df['res_num'], y=comparison_df['SASA_M'],
                 name='البروتين المصاب (MT)',
                 line=dict(color='#ff3333', width=2),
                 fill='tonexty', 
@@ -597,9 +607,9 @@ def main():
             ))
 
             # تمييز مواقع الطفرات بنجوم صفراء على الرسم
-            mutations_df = df_comp[df_comp['السليم'] != df_comp['المصاب']]
+            mutations_df = comparison_df[comparison_df['السليم'] != comparison_df['المصاب']]
             if not mutations_df.empty:
-                f_comp.add_trace(go.Scatter(
+                sasa_figure.add_trace(go.Scatter(
                     x=mutations_df['res_num'],
                     y=mutations_df['SASA_M'],
                     mode='markers',
@@ -609,7 +619,7 @@ def main():
                     customdata=mutations_df[['السليم', 'المصاب', 'Impact']].values
                 ))
 
-            f_comp.update_layout(
+            sasa_figure.update_layout(
                 template="plotly_dark",
                 height=450,
                 hovermode="x unified",
@@ -618,14 +628,14 @@ def main():
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 margin=dict(l=0, r=0, t=30, b=0)
             )
-            st.plotly_chart(f_comp, use_container_width=True)
+            st.plotly_chart(sasa_figure, use_container_width=True)
 
-            st.header(f"🧬 Alignment ({align_mode.capitalize()})")
-            sc1, sc2, sc3 = st.columns(3)
-            sc1.metric("Alignment Score", round(aln_data['score'], 1))
-            sc2.metric("Identity %", f"{(sum(a == b and a != '-' for a, b in zip(aln_data['aln1'], aln_data['aln2'])) / len(aln_data['aln1']) * 100):.1f}%")
-            sc3.metric("فرق الطول", abs(len(aln_data['h_str']) - len(aln_data['m_str'])))
-            st.code(aln_data['text'], language='text')
+            st.header(f"🧬 Alignment ({alignment_mode.capitalize()})")
+            score_col1, score_col2, score_col3 = st.columns(3)
+            score_col1.metric("Alignment Score", round(alignment_data['score'], 1))
+            score_col2.metric("Identity %", f"{(sum(a == b and a != '-' for a, b in zip(alignment_data['aligned_healthy'], alignment_data['aligned_mutant'])) / len(alignment_data['aligned_healthy']) * 100):.1f}%")
+            score_col3.metric("فرق الطول", abs(len(alignment_data['healthy_str']) - len(alignment_data['mutant_str'])))
+            st.code(alignment_data['text'], language='text')
 
 if __name__ == "__main__":
     main()
