@@ -64,7 +64,7 @@ SESSION_DEFAULTS = {
     'h_id': '',    'm_id': '',
     'h_results': None, 'm_results': None,
     'h_selected_chain': None, 'm_selected_chain': None,
-    'h_id_in': '', 'm_id_in': ''
+    'h_id_in_val': '', 'm_id_in_val': ''
 }
 
 
@@ -435,7 +435,9 @@ def protein_ui_panel(p: dict):
         source = st.radio("المصدر:", ["PDB ID", "رفع ملف"], key=f"{prefix}_src", horizontal=True)
 
         if source == "PDB ID":
-            pdb_input = st.text_input("كود PDB", key=f"{prefix}_id_in").strip().upper()
+            # نستخدم متغير وسيط في Session State لتجنب استثناء Streamlit عند تعديل قيم المفاتيح النشطة
+            pdb_input = st.text_input("كود PDB", value=st.session_state[f"{prefix}_id_in_val"], key=f"{prefix}_id_widget").strip().upper()
+            st.session_state[f"{prefix}_id_in_val"] = pdb_input
 
             if st.button(f"تحميل {p['label']}", key=f"btn_{prefix}"):
                 with st.spinner('جاري التحميل...'):
@@ -446,7 +448,7 @@ def protein_ui_panel(p: dict):
                             h_id   = mdb[pdb_input]
                             h_data = fetch_pdb_data(h_id)
                             if h_data:
-                                st.session_state['h_id_in'] = h_id
+                                st.session_state['h_id_in_val'] = h_id
                                 st.session_state['h_pdb']   = h_data
                                 st.session_state['h_id']    = h_id
                                 st.info(f"✅ تم تحميل البروتين السليم تلقائياً: {h_id}")
@@ -455,7 +457,7 @@ def protein_ui_panel(p: dict):
                     if data:
                         st.session_state[f"{prefix}_pdb"] = data
                         st.session_state[f"{prefix}_id"]  = pdb_input
-                        keep = [f"{prefix}_pdb", f"{prefix}_id", f"{prefix}_src", f"{prefix}_id_in"]
+                        keep = [f"{prefix}_pdb", f"{prefix}_id", f"{prefix}_src", f"{prefix}_id_in_val"]
                         clear_protein_state(prefix, keep)
                         st.rerun()
                     else:
